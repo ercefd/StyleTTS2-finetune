@@ -263,6 +263,18 @@ def main(config_path):
 
     n_down = model.text_aligner.n_down
 
+    # Decoder regularization: store frozen reference copy of pretrained decoder
+    # weights to penalise catastrophic forgetting of EN acoustic quality.
+    _decoder_reg_lambda = float(loss_params.get('lambda_decoder_reg', 0.0))
+    if _decoder_reg_lambda > 0:
+        _decoder_ref_params = {
+            n: p.detach().clone()
+            for n, p in model['decoder'].named_parameters()
+        }
+        print(f'Decoder regularization enabled (lambda={_decoder_reg_lambda})')
+    else:
+        _decoder_ref_params = {}
+
     best_loss = float("inf")  # best test loss
     loss_train_record = list([])
     loss_test_record = list([])
@@ -615,6 +627,15 @@ def main(config_path):
                 + loss_params.lambda_sty * loss_sty
                 + loss_params.lambda_diff * loss_diff
             )
+
+            if _decoder_reg_lambda > 0 and epoch >= joint_epoch:
+                _dec_reg = sum(
+                    (p - _decoder_ref_params[n]).pow(2).sum()
+                    for n, p in model['decoder'].named_parameters()
+                )
+                g_loss = g_loss + _decoder_reg_lambda * _dec_reg
+            else:
+                _dec_reg = 0
 
             running_loss += loss_mel.item()
             g_loss.backward()

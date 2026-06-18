@@ -190,6 +190,18 @@ def main(config_path):
             start_epoch = 0
             iters = 0
 
+    # Decoder regularization: store frozen reference copy of base Kokoro decoder
+    # weights to penalise catastrophic forgetting of EN acoustic quality.
+    _decoder_reg_lambda = float(loss_params.get('lambda_decoder_reg', 0.0))
+    if _decoder_reg_lambda > 0:
+        _decoder_ref_params = {
+            n: p.detach().clone()
+            for n, p in model['decoder'].named_parameters()
+        }
+        logger.info(f'Decoder regularization enabled (lambda={_decoder_reg_lambda})')
+    else:
+        _decoder_ref_params = {}
+
     # in case not distributed
     try:
         n_down = model.text_aligner.module.n_down
@@ -392,6 +404,15 @@ def main(config_path):
 
             running_loss += accelerator.gather(loss_mel).mean().item()
 
+            if _decoder_reg_lambda > 0:
+                _dec_reg = sum(
+                    (p - _decoder_ref_params[n]).pow(2).sum()
+                    for n, p in model['decoder'].named_parameters()
+                )
+                g_loss = g_loss + _decoder_reg_lambda * _dec_reg
+            else:
+                _dec_reg = 0
+
             accelerator.backward(g_loss)
 
             optimizer.step("text_encoder")
@@ -428,6 +449,7 @@ def main(config_path):
                 writer.add_scalar("train/mono_loss", loss_mono, iters)
                 writer.add_scalar("train/s2s_loss", loss_s2s, iters)
                 writer.add_scalar("train/slm_loss", loss_slm, iters)
+                writer.add_scalar("train/dec_reg", _dec_reg.item() if torch.is_tensor(_dec_reg) else _dec_reg, iters)
 
                 running_loss = 0
 
